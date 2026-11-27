@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>剪刀石頭布</title>
+<style>
+  :root { --bg:#f4f1ea; --card:#fff; --text:#2b2b2b; --win:#2e9e5b; --lose:#d64545; --tie:#8a8a8a; --accent:#3b6fd4; --track:#e3e3e3; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#1b1d22; --card:#262930; --text:#eee; --accent:#6c97f0; --track:#3a3d45; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+         background:var(--bg); color:var(--text); font-family:"Microsoft JhengHei",system-ui,sans-serif; }
+  .game { background:var(--card); border-radius:20px; padding:28px 24px; width:min(92vw,440px);
+          text-align:center; box-shadow:0 8px 30px rgba(0,0,0,.12); }
+  h1 { margin:0 0 6px; font-size:1.6rem; }
+  .sub { margin:0 0 14px; font-size:.9rem; opacity:.7; }
+  .score { display:flex; justify-content:space-around; margin-bottom:14px; font-size:1rem; }
+  .score b { display:block; font-size:1.6rem; }
+  .timer { margin:6px 0 4px; font-size:1.3rem; font-weight:bold; }
+  .timer.urgent { color:var(--lose); }
+  .bar { height:8px; background:var(--track); border-radius:4px; overflow:hidden; margin-bottom:10px; }
+  .bar i { display:block; height:100%; width:100%; background:var(--accent); transition:width 1s linear; }
+  .bar.urgent i { background:var(--lose); }
+  .arena { display:flex; justify-content:space-around; align-items:center; margin:12px 0; }
+  .hand { font-size:4.2rem; line-height:1; }
+  .hand small { display:block; font-size:.85rem; margin-top:6px; opacity:.7; }
+  .vs { font-weight:bold; opacity:.5; }
+  .result { min-height:2rem; font-size:1.4rem; font-weight:bold; margin:8px 0 16px; }
+  .win { color:var(--win); } .lose { color:var(--lose); } .tie { color:var(--tie); }
+  .buttons { display:flex; gap:10px; justify-content:center; }
+  .buttons button { font-size:2.4rem; padding:12px 16px; border:2px solid var(--accent); background:transparent;
+                    border-radius:14px; cursor:pointer; transition:transform .1s, background .15s; }
+  .buttons button:hover:not(:disabled) { background:var(--accent); transform:translateY(-3px); }
+  .buttons button:disabled { opacity:.4; cursor:default; }
+  .ctrl { display:flex; gap:12px; justify-content:center; margin-top:18px; }
+  .ctrl-hint { margin-top:10px; font-size:.75rem; opacity:.5; }
+  .reset:disabled { opacity:.35; cursor:default; }
+  .reset { padding:8px 18px; background:none; border:2px solid var(--accent); border-radius:10px;
+           color:var(--accent); cursor:pointer; font-size:.95rem; }
+  .snd { position:absolute; top:10px; right:12px; display:flex; gap:6px; }
+  .snd button { background:none; border:none; font-size:1.3rem; cursor:pointer; padding:4px; }
+  .game { position:relative; }
+  .shake { animation:shake .5s; }
+  @keyframes shake { 0%,100%{transform:translateY(0)} 25%{transform:translateY(-14px)} 50%{transform:translateY(0)} 75%{transform:translateY(-14px)} }
+</style>
+</head>
+<body>
+<div class="game">
+  <div class="snd">
+    <button id="bgmBtn" title="背景音樂 開/關">🎵</button>
+    <button id="sfxBtn" title="音效 開/關">🔊</button>
+  </div>
+  <h1>✂️ 剪刀石頭布 🪨</h1>
+  <p class="sub">五戰三勝 · 每局限時 10 秒，超時算輸</p>
+  <div class="score">
+    <div>你<b id="sw">0</b></div>
+    <div>平手<b id="st">0</b></div>
+    <div>電腦<b id="sl">0</b></div>
+  </div>
+  <div class="timer" id="timer">第 1 局　⏱ 10</div>
+  <div class="bar" id="bar"><i id="fill"></i></div>
+  <div class="arena">
+    <div class="hand" id="me">❔<small>你</small></div>
+    <div class="vs">VS</div>
+    <div class="hand" id="cpu">❔<small>電腦</small></div>
+  </div>
+  <div class="result" id="result">請出拳！</div>
+  <div class="buttons">
+    <button data-m="0" title="剪刀">✌️</button>
+    <button data-m="1" title="石頭">✊</button>
+    <button data-m="2" title="布">✋</button>
+  </div>
+  <div class="ctrl">
+    <button class="reset" id="pause">⏸ 暫停</button>
+    <button class="reset" id="reset">重新開始</button>
+  </div>
+  <div class="ctrl-hint">快捷鍵：空白鍵 暫停／繼續</div>
+</div>
+<script>
+  const E = ["✌️","✊","✋"], N = ["剪刀","石頭","布"];
+  const WIN_TARGET = 3, LIMIT = 10, NEXT_DELAY = 1800;
+  const s = {w:0,t:0,l:0};
+  let round = 1, left = LIMIT, tick = null, nextT = null, shakeT = null, locked = true, over = false;
+  let paused = false, deferred = null, savedResult = null;
+  // 暫停期間到點的排程動作，延到繼續時才執行
+  const gate = fn => () => { if (paused) deferred = fn; else fn(); };
+
+  function setPause(on) {
+    if (on === paused || over) return;
+    paused = on;
+    Snd.hold(on);
+    $("pause").textContent = on ? "▶ 繼續" : "⏸ 暫停";
+    if (on) {
+      savedResult = [$("result").textContent, $("result").className];
+      setResult("⏸ 遊戲暫停中");
+      setBtns(false);
+    } else {
+      setResult(savedResult[0], savedResult[1].replace("result", "").trim());
+      setBtns(!locked);
+      const f = deferred; deferred = null;
+      if (f) f();
+    }
+  }
+  const $ = id => document.getElementById(id);
+
+  // ===== 音效與背景音樂（Web Audio 合成，不需外部檔案）=====
+  const Snd = (() => {
+    let ctx = null, master, bgmGain, bgmOn = true, sfxOn = true, timer = null, step = 0, nextTime = 0, held = false;
+    const hz = n => 440 * Math.pow(2, (n - 69) / 12);
+    function init() {
+      if (ctx) { if (ctx.state === "suspended" && !held) ctx.resume(); return; }
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      ctx = new AC();
+      master = ctx.createGain(); master.gain.value = 0.8; master.connect(ctx.destination);
+      bgmGain = ctx.createGain(); bgmGain.gain.value = 0.16; bgmGain.connect(master);
+      if (bgmOn) startBgm();
+      if (held) ctx.suspend();
+    }
+    function tone(freq, t, dur, type, vol, dest, slideTo) {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = type; o.frequency.setValueAtTime(freq, t);
+      if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(vol, t + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      o.connect(g); g.connect(dest || master);
+      o.start(t); o.stop(t + dur + 0.05);
+    }
+    function sfx(name) {
+      if (!sfxOn || !ctx) return;
+      const t = ctx.currentTime;
+      switch (name) {
+        case "click": tone(660, t, 0.08, "square", 0.15); break;
+        case "shake": [0, .15, .3].forEach(d => tone(220, t + d, 0.1, "triangle", 0.3, null, 140)); break;
+        case "win":   [72, 76, 79, 84].forEach((n, i) => tone(hz(n), t + i * 0.1, 0.18, "square", 0.18)); break;
+        case "lose":  [67, 64, 60].forEach((n, i) => tone(hz(n), t + i * 0.16, 0.25, "sawtooth", 0.16)); break;
+        case "tie":   tone(hz(65), t, 0.15, "triangle", 0.25); tone(hz(65), t + 0.2, 0.15, "triangle", 0.25); break;
+        case "tick":  tone(1000, t, 0.06, "square", 0.12); break;
+        case "timeout": tone(300, t, 0.6, "sawtooth", 0.2, null, 90); break;
+        case "victory": [72, 72, 72, 76, 79, 76, 79, 84].forEach((n, i) => tone(hz(n), t + i * 0.13, 0.22, "square", 0.18)); break;
+        case "defeat":  [64, 62, 60, 55].forEach((n, i) => tone(hz(n), t + i * 0.28, 0.4, "sawtooth", 0.16, null, hz(n) * 0.9)); break;
+      }
+    }
+    // BGM：輕快的五聲音階循環
+    const mel = [72,74,76,79,76,74,72,null, 69,72,74,76,74,72,69,null, 67,69,72,74,72,69,67,null, 69,72,76,79,76,72,74,null];
+    const bass = [48,48,55,55, 45,45,52,52, 43,43,50,50, 45,45,52,52];
+    const SPB = 60 / 132 / 2;   // 每個八分音符的秒數
+    function schedule() {
+      while (nextTime < ctx.currentTime + 0.3) {
+        const m = mel[step % mel.length];
+        if (m) tone(hz(m), nextTime, SPB * 0.9, "triangle", 0.6, bgmGain);
+        if (step % 2 === 0) tone(hz(bass[(step / 2) % bass.length]), nextTime, SPB * 1.8, "sine", 0.7, bgmGain);
+        if (step % 4 === 2) tone(8000, nextTime, 0.03, "square", 0.08, bgmGain);
+        nextTime += SPB; step++;
+      }
+    }
+    function startBgm() {
+      if (!ctx || timer) return;
+      nextTime = ctx.currentTime + 0.05;
+      timer = setInterval(schedule, 100);
+    }
+    function stopBgm() { clearInterval(timer); timer = null; }
+    return {
+      init, sfx,
+      hold(on) { held = on; if (ctx) on ? ctx.suspend() : ctx.resume(); },
+      toggleBgm() { bgmOn = !bgmOn; bgmOn ? startBgm() : stopBgm(); return bgmOn; },
+      toggleSfx() { sfxOn = !sfxOn; return sfxOn; },
+      bgmOn: () => bgmOn
+    };
+  })();
+  // 瀏覽器需有使用者操作後才能發聲
+  document.addEventListener("pointerdown", () => Snd.init());
+  $("bgmBtn").addEventListener("click", () => { Snd.init(); $("bgmBtn").style.opacity = Snd.toggleBgm() ? 1 : 0.35; });
+  $("sfxBtn").addEventListener("click", () => { Snd.init(); const on = Snd.toggleSfx(); $("sfxBtn").textContent = on ? "🔊" : "🔇"; });
+
+  const btns = document.querySelectorAll(".buttons button");
+
+  const setBtns = on => btns.forEach(b => b.disabled = !on);
+  const show = (el, i, label) => el.innerHTML = E[i] + "<small>" + label + "</small>";
+  const setResult = (txt, cls) => { $("result").textContent = txt; $("result").className = "result " + (cls || ""); };
+  const scores = () => { $("sw").textContent = s.w; $("st").textContent = s.t; $("sl").textContent = s.l; };
+
+  function renderTimer() {
+    const urgent = left <= 3;
+    $("timer").textContent = "第 " + round + " 局　⏱ " + left;
+    $("timer").classList.toggle("urgent", urgent);
+    $("bar").classList.toggle("urgent", urgent);
+    $("fill").style.width = (left / LIMIT * 100) + "%";
+  }
+
+  function startRound() {
+    $("me").innerHTML = "❔<small>你</small>";
+    $("cpu").innerHTML = "❔<small>電腦</small>";
+    setResult("請出拳！");
+    locked = false; setBtns(true);
+    left = LIMIT;
+    $("fill").style.transition = "none"; renderTimer();
+    void $("fill").offsetWidth; $("fill").style.transition = "";
+    clearInterval(tick);
+    tick = setInterval(() => {
+      if (paused) return;
+      left--; renderTimer();
+      if (left > 0 && left <= 3) Snd.sfx("tick");
+      if (left <= 0) { clearInterval(tick); timeout(); }
+    }, 1000);
+  }
+
+  function endRound(outcome, myPick, cpuPick) {
+    // outcome: "win" | "lose" | "tie" | "timeout"
+    clearInterval(tick); locked = true; setBtns(false);
+    Snd.sfx(outcome);
+    if (outcome === "win") { s.w++; setResult("你贏了這局！🎉", "win"); }
+    else if (outcome === "lose") { s.l++; setResult("你輸了這局…", "lose"); }
+    else if (outcome === "timeout") {
+      s.l++; setResult("⏰ 超時！這局算你輸", "lose");
+      $("me").innerHTML = "⌛<small>未出拳</small>";
+      show($("cpu"), Math.floor(Math.random()*3), "電腦");
+    } else { s.t++; setResult("平手！這局重打", "tie"); }
+    scores();
+
+    if (s.w >= WIN_TARGET || s.l >= WIN_TARGET) {
+      over = true;
+      const won = s.w >= WIN_TARGET;
+      $("pause").disabled = true;
+      nextT = setTimeout(gate(() => {
+        Snd.sfx(won ? "victory" : "defeat");
+        setResult(won ? "🏆 恭喜！你贏得整場比賽！" : "💀 電腦贏得整場比賽…", won ? "win" : "lose");
+        $("timer").textContent = "比賽結束（" + s.w + " : " + s.l + "）";
+        $("timer").classList.remove("urgent"); $("bar").classList.remove("urgent");
+        $("reset").textContent = "再來一場";
+      }), 900);
+      return;
+    }
+    if (outcome !== "tie") round++;   // 平手不算一局，重打
+    nextT = setTimeout(gate(startRound), NEXT_DELAY);
+  }
+
+  function timeout() { if (!locked) endRound("timeout"); }
+
+  function play(m) {
+    if (locked || over || paused) return;
+    clearInterval(tick); locked = true; setBtns(false);
+    Snd.sfx("shake");
+    ["me","cpu"].forEach(id => { $(id).innerHTML = "✊<small>" + (id==="me"?"你":"電腦") + "</small>"; $(id).classList.add("shake"); });
+    shakeT = setTimeout(gate(() => {
+      ["me","cpu"].forEach(id => $(id).classList.remove("shake"));
+      const c = Math.floor(Math.random()*3);
+      show($("me"), m, "你：" + N[m]); show($("cpu"), c, "電腦：" + N[c]);
+      const d = (m - c + 3) % 3;
+      endRound(d === 0 ? "tie" : d === 2 ? "win" : "lose", m, c);
+    }), 600);
+  }
+
+  function reset() {
+    clearInterval(tick); clearTimeout(nextT); clearTimeout(shakeT);
+    ["me","cpu"].forEach(id => $(id).classList.remove("shake"));
+    s.w = s.t = s.l = 0; round = 1; over = false; scores();
+    paused = false; deferred = null; Snd.hold(false);
+    $("pause").textContent = "⏸ 暫停"; $("pause").disabled = false;
+    $("reset").textContent = "重新開始";
+    startRound();
+  }
+
+  btns.forEach(b => b.addEventListener("click", () => play(+b.dataset.m)));
+  $("pause").addEventListener("click", () => { setPause(!paused); $("pause").blur(); });
+  document.addEventListener("keyup", e => { if (e.code === "Space") e.preventDefault(); });
+  document.addEventListener("keydown", e => {
+    if (e.code === "Space") { e.preventDefault(); setPause(!paused); }
+  });
+  $("reset").addEventListener("click", () => { Snd.sfx("click"); reset(); });
+  startRound();
+</script>
+</body>
+</html>
